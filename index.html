@@ -1,0 +1,432 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>MiniChain — Lightweight Mobile Blockchain Prototype</title>
+<style>
+  :root{--bg:#071023;--card:#0b1220;--muted:#9aa4b2;--accent:#2dd4bf;--glass:rgba(255,255,255,0.03)}
+  *{box-sizing:border-box}
+  html,body{height:100%;margin:0;font-family:system-ui,-apple-system,Segoe UI,Roboto,'Helvetica Neue',Arial}
+  body{background:linear-gradient(180deg,#061024 0%, #071023 100%);color:#e6eef8;padding:12px}
+  .app{max-width:980px;margin:0 auto}
+  header{display:flex;gap:12px;align-items:center;justify-content:space-between}
+  h1{font-size:1.1rem;margin:0}
+  .sub{color:var(--muted);font-size:0.82rem}
+  .card{background:var(--card);padding:12px;border-radius:12px;box-shadow:0 6px 18px rgba(2,6,23,0.6);margin-top:12px}
+  input,select,button,textarea{font-size:0.95rem;padding:8px;border-radius:8px;border:1px solid rgba(255,255,255,0.04);background:transparent;color:inherit}
+  button{cursor:pointer;border:none;background:var(--accent);color:#042024}
+  .row{display:flex;gap:8px;align-items:center}
+  .small{font-size:0.86rem;padding:6px;border-radius:8px}
+  .muted{color:var(--muted)}
+  .cols{display:grid;grid-template-columns:1fr;gap:10px}
+  @media(min-width:900px){.cols{grid-template-columns:360px 1fr}}
+  .node{background:var(--glass);padding:8px;border-radius:10px}
+  .tx{background:rgba(255,255,255,0.02);padding:8px;border-radius:8px;margin-bottom:8px}
+  .flex{display:flex;gap:8px;align-items:center}
+  .right{margin-left:auto}
+  pre{white-space:pre-wrap;font-size:0.9rem}
+  .graph{font-family:monospace;font-size:0.78rem;line-height:1.2}
+  .tiny{font-size:0.78rem;color:var(--muted)}
+</style>
+</head>
+<body>
+  <div class="app">
+    <header>
+      <div><h1>MiniChain — Lightweight Blockchain Prototype</h1><div class="sub">Local simulation for low-end devices • no heavy servers</div></div>
+      <div class="sub">Prototype</div>
+    </header>
+
+    <div class="card cols">
+
+      <!-- Left column: wallet & nodes -->
+      <section class="node card">
+        <div style="display:flex;justify-content:space-between;align-items:center">
+          <div><strong>Your Node</strong><div class="tiny">Private identity & local ledger</div></div>
+          <div><button id="genKey" class="small">Generate Key</button></div>
+        </div>
+
+        <div style="margin-top:10px">
+          <label class="tiny">Address</label>
+          <pre id="myAddr">—</pre>
+          <div class="tiny">Balance: <span id="myBal">0</span> ⯈ (confirmed)</div>
+        </div>
+
+        <hr/>
+
+        <div>
+          <div class="tiny">Send Transaction</div>
+          <div class="row" style="margin-top:8px">
+            <input id="toAddr" placeholder="Recipient address" style="flex:1" />
+            <input id="amount" placeholder="Amount" style="width:110px" type="number" step="any" />
+          </div>
+          <div style="margin-top:8px" class="row">
+            <button id="sendBtn">Send</button>
+            <button id="broadcastBtn" class="small">Broadcast (force)</button>
+            <div class="right tiny" id="lastStatus">—</div>
+          </div>
+        </div>
+
+        <hr/>
+
+        <div>
+          <div class="tiny">Network</div>
+          <div style="display:flex;gap:8px;margin-top:8px">
+            <label class="tiny">Simulated peers</label>
+            <select id="peerCount"><option value="3">3</option><option value="5" selected>5</option><option value="9">9</option></select>
+            <button id="resetNet" class="small">Reset</button>
+          </div>
+          <div style="margin-top:8px" class="tiny">Consensus: sampling voting. Threshold: <span id="voteThresh">0.6</span> (fraction)</div>
+          <div style="margin-top:6px" class="tiny">Each broadcast asks a random sample of peers; when ≥ threshold votes confirm, tx is added.</div>
+        </div>
+      </section>
+
+      <!-- Right column: ledger, peers, visualization -->
+      <section class="card">
+        <div style="display:flex;align-items:center;justify-content:space-between">
+          <div><strong>Ledger / DAG</strong><div class="tiny">Confirmed transactions (newest first)</div></div>
+          <div><button id="stepBtn" class="small">Simulate tick</button></div>
+        </div>
+
+        <div style="margin-top:10px">
+          <div id="ledger" ></div>
+        </div>
+
+        <hr/>
+
+        <div style="display:flex;gap:8px;align-items:flex-start;flex-wrap:wrap">
+          <div style="flex:1;min-width:220px">
+            <div class="tiny">Pending pool</div>
+            <div id="pool"></div>
+          </div>
+          <div style="flex:1;min-width:220px">
+            <div class="tiny">Peers (simulated)</div>
+            <div id="peers"></div>
+          </div>
+        </div>
+
+        <hr/>
+
+        <div>
+          <div class="tiny">Simple DAG view (references)</div>
+          <pre id="dag" class="graph"></pre>
+        </div>
+
+      </section>
+    </div>
+
+    <footer style="margin-top:12px" class="muted tiny">
+      Prototype — browser-only. To extend to real devices, integrate WebRTC for P2P, and persistent stable storage (IndexedDB, or optional Firebase sync).
+    </footer>
+  </div>
+
+<script>
+/*
+MiniChain prototype
+- Uses WebCrypto ECDSA P-256 keys (private stored in local variable; not persisted for privacy in this prototype).
+- Transactions:
+  { id, from, to, amount, time, refs: [refIds], sig }.
+- Network:
+  - local node (you) and N simulated peers
+  - peers validate signature and balances and vote yes/no
+  - sampling consensus: pick M peers (min(N, sampleSize)), if >= threshold fraction yes -> confirmed
+- Ledger:
+  - confirmedTxs[] (the DAG). Each tx references 1-2 previous tx ids (or empty for genesis)
+  - balances computed from confirmed ledger
+*/
+
+///// Utilities
+const utf8 = new TextEncoder();
+async function sha256Hex(strOrBytes){
+  const b = (typeof strOrBytes === 'string') ? utf8.encode(strOrBytes) : strOrBytes;
+  const h = await crypto.subtle.digest('SHA-256', b);
+  return Array.from(new Uint8Array(h)).map(x=>x.toString(16).padStart(2,'0')).join('');
+}
+function nowISO(){ return new Date().toISOString(); }
+function randChoice(arr){ return arr[Math.floor(Math.random()*arr.length)]; }
+function shuffle(a){ for(let i=a.length-1;i>0;i--){ const j=Math.floor(Math.random()*(i+1)); [a[i],a[j]]=[a[j],a[i]] } return a; }
+
+///// Node & network state
+let myKeyPair = null;        // CryptoKey pair
+let myAddr = null;           // derived short address string
+let peers = [];              // simulated peers: {addr, pubKeyHex, initialBalance}
+let peerCount = Number(document.getElementById('peerCount').value) || 5;
+
+let pendingPool = [];        // unconfirmed txs
+let confirmed = [];         // ledger DAG (newest first)
+let lastPrices = {};        // placeholder if needed
+
+const SAMPLE_SIZE = 5;
+const VOTE_THRESHOLD = 0.6; // fraction
+
+document.getElementById('voteThresh').textContent = VOTE_THRESHOLD;
+
+///// Key generation & address derivation
+async function generateKeyPair(){
+  myKeyPair = await crypto.subtle.generateKey(
+    { name: "ECDSA", namedCurve: "P-256" },
+    true,
+    ["sign","verify"]
+  );
+  const pubRaw = await crypto.subtle.exportKey('spki', myKeyPair.publicKey);
+  const pubHex = await sha256Hex(pubRaw);
+  myAddr = pubHex.slice(0,12); // short address
+  document.getElementById('myAddr').textContent = myAddr;
+  // Setup simulated network after key ready
+  setupNetwork();
+  renderAll();
+}
+
+document.getElementById('genKey').addEventListener('click', generateKeyPair);
+
+///// Transaction creation & signing
+async function signTransaction(txObj){
+  // compute id = sha256 of JSON (without sig)
+  const copy = Object.assign({}, txObj);
+  delete copy.sig;
+  const json = JSON.stringify(copy);
+  const id = await sha256Hex(json);
+  copy.id = id;
+  const toSign = utf8.encode(JSON.stringify(copy));
+  const sigArray = await crypto.subtle.sign({name:"ECDSA", hash:"SHA-256"}, myKeyPair.privateKey, toSign);
+  const sigHex = Array.from(new Uint8Array(sigArray)).map(b=>b.toString(16).padStart(2,'0')).join('');
+  copy.sig = sigHex;
+  // final id = hash of signed tx (ensures immutable id)
+  copy.id = await sha256Hex(JSON.stringify(copy));
+  return copy;
+}
+
+document.getElementById('sendBtn').addEventListener('click', async ()=>{
+  const to = document.getElementById('toAddr').value.trim();
+  const amount = Number(document.getElementById('amount').value);
+  if(!myKeyPair || !myAddr) return alert('Generate your key first.');
+  if(!to || !amount || amount <= 0) return alert('Recipient and amount required.');
+  // choose 1-2 refs from latest confirmed txs
+  const refs = confirmed.slice(0,2).map(t=>t.id);
+  const tx = {
+    from: myAddr,
+    to, amount,
+    time: nowISO(),
+    refs
+  };
+  const signed = await signTransaction(tx);
+  pendingPool.unshift(signed);
+  document.getElementById('lastStatus').textContent = 'Created tx ' + signed.id.slice(0,8);
+  renderAll();
+  // auto-broadcast to network (simulate background gossip)
+  setTimeout(()=>broadcastTransaction(signed), 400 + Math.random()*800);
+});
+
+document.getElementById('broadcastBtn').addEventListener('click', ()=>{
+  if(pendingPool.length===0) return alert('No pending tx');
+  broadcastTransaction(pendingPool[0], true);
+});
+
+///// Simulated peers & network logic
+function makePeer(){
+  // create simple simulated peer with random address and initial balance
+  const randHex = (Math.random().toString(36).slice(2,10) + Math.random().toString(36).slice(2,10)).slice(0,12);
+  const initial = 10 + Math.floor(Math.random()*90);
+  return { addr: 'peer_'+randHex, balance: initial };
+}
+
+function setupNetwork(){
+  peerCount = Number(document.getElementById('peerCount').value) || 5;
+  peers = [];
+  for(let i=0;i<peerCount;i++){
+    peers.push(makePeer());
+  }
+  // give you some initial balance by creating a genesis tx if ledger empty
+  if(confirmed.length===0){
+    const genesis = {
+      id: 'genesis',
+      from: 'system',
+      to: myAddr,
+      amount: 100,
+      time: nowISO(),
+      refs: [],
+      sig: 'system'
+    };
+    confirmed.unshift(genesis);
+  }
+  renderAll();
+}
+document.getElementById('resetNet').addEventListener('click', ()=>{ setupNetwork(); });
+
+///// Validation & voting
+async function verifySignature(tx){
+  // For prototype: we only signed txs from local user. For peers we accept if signature is present or is 'system'
+  if(tx.sig === 'system') return true;
+  try{
+    // reconstruct copy without sig to verify
+    const copy = Object.assign({}, tx); delete copy.sig;
+    // id may have changed if signature removed, but proto: verify that signature corresponds to the JSON-without-sig
+    const toVerify = utf8.encode(JSON.stringify(copy));
+    // we cannot recover public key from signature in WebCrypto easily; simplified: if tx.from == myAddr then verify using my publicKey
+    if(tx.from === myAddr){
+      const ok = await crypto.subtle.verify({name:"ECDSA", hash:"SHA-256"}, myKeyPair.publicKey, hexToArray(tx.sig), toVerify);
+      return ok;
+    }
+    // For simulated peers, assume they're honest and have valid signature (since they are simulation)
+    return true;
+  }catch(e){ return false; }
+}
+
+function hexToArray(hex){
+  const len = hex.length/2;
+  const a = new Uint8Array(len);
+  for(let i=0;i<len;i++) a[i] = parseInt(hex.slice(i*2,i*2+2),16);
+  return a;
+}
+
+function computeBalancesFromConfirmed(){
+  const bal = {};
+  // start with peers initial balances
+  peers.forEach(p=> bal[p.addr] = p.balance);
+  // ensure myAddr exists
+  if(myAddr && !(myAddr in bal)) bal[myAddr] = 0;
+  // apply confirmed txs in order (oldest first)
+  const confirmedOldFirst = [...confirmed].reverse();
+  confirmedOldFirst.forEach(tx=>{
+    if(tx.from !== 'system'){
+      bal[tx.from] = (bal[tx.from]||0) - Number(tx.amount||0);
+    }
+    bal[tx.to] = (bal[tx.to]||0) + Number(tx.amount||0);
+  });
+  return bal;
+}
+
+async function peerValidatesTx(peer, tx){
+  // simulate async check & signature validation and double-spend check
+  await new Promise(r=>setTimeout(r, 80 + Math.random()*220));
+  // signature
+  const sigOk = await verifySignature(tx);
+  if(!sigOk) return false;
+  // balance check: compute from confirmed ledger (not including this tx) whether 'from' has enough funds
+  const bal = computeBalancesFromConfirmed();
+  const fromBal = bal[tx.from] || 0;
+  if(Number(tx.amount) > fromBal) return false;
+  // check double spend conflict with other pending txs referencing same funds: for simplicity, we reject if pendingPool contains a tx from same from with overlapping amount that is earlier in pool
+  // (This is simplified — for prototype it's ok)
+  const competing = pendingPool.find(p => p.from === tx.from && p.id !== tx.id);
+  if(competing) {
+    // 50% chance to reject competing to add randomness
+    return Math.random() > 0.5;
+  }
+  return true;
+}
+
+async function broadcastTransaction(tx, force=false){
+  // simulate selecting a sample of peers to ask (including yourself)
+  const net = [...peers.map(p=>p.addr)];
+  // include yourself as a voter
+  net.push(myAddr || 'you');
+  const sample = shuffle(net).slice(0, Math.min(SAMPLE_SIZE, net.length));
+  // ask each sample member for validation
+  const votes = [];
+  for(const addr of sample){
+    if(addr === myAddr) {
+      // local node verifies immediately
+      const ok = await peerValidatesTx({addr:myAddr}, tx);
+      votes.push(ok);
+    } else {
+      // simulated peer: call peerValidatesTx with small chance of network delay
+      const ok = await peerValidatesTx({addr}, tx);
+      votes.push(ok);
+    }
+  }
+  const yes = votes.filter(v=>v).length;
+  const frac = yes / votes.length;
+  // if passes threshold -> confirm
+  if(frac >= VOTE_THRESHOLD || force){
+    // add to confirmed ledger with references (we keep tx as-is)
+    // guard: avoid duplicate
+    if(!confirmed.find(c=>c.id === tx.id)){
+      confirmed.unshift(tx);
+      // remove from pending
+      pendingPool = pendingPool.filter(p=>p.id!==tx.id);
+      document.getElementById('lastStatus').textContent = `Tx ${tx.id.slice(0,8)} confirmed (${yes}/${votes.length})`;
+    }
+  } else {
+    document.getElementById('lastStatus').textContent = `Tx ${tx.id.slice(0,8)} rejected (${yes}/${votes.length})`;
+  }
+  renderAll();
+}
+
+///// UI rendering
+function renderPeers(){
+  const el = document.getElementById('peers'); el.innerHTML = '';
+  peers.forEach(p=>{
+    const d = document.createElement('div'); d.className='tx';
+    d.innerHTML = `<div style="display:flex;justify-content:space-between"><div><strong>${p.addr}</strong><div class="tiny">init ${p.balance}</div></div><div class="tiny">—</div></div>`;
+    el.appendChild(d);
+  });
+}
+
+function renderPool(){
+  const el = document.getElementById('pool'); el.innerHTML = '';
+  if(pendingPool.length===0) el.innerHTML = `<div class="tiny">No pending tx</div>`;
+  pendingPool.forEach(tx=>{
+    const d = document.createElement('div'); d.className='tx';
+    d.innerHTML = `<div style="display:flex;justify-content:space-between"><div><strong>${tx.id.slice(0,8)}</strong> <span class="tiny">from ${tx.from} to ${tx.to}</span><div class="tiny">${tx.amount}</div></div>
+    <div><button class="small" onclick='broadcastTransaction(window.pendingPool.find(t=>t.id==\"${tx.id}\"))'>Ask</button></div></div>`;
+    el.appendChild(d);
+  });
+}
+
+function renderLedger(){
+  const el = document.getElementById('ledger'); el.innerHTML = '';
+  if(confirmed.length===0) el.innerHTML = '<div class="tiny">Empty ledger</div>';
+  confirmed.slice(0,50).forEach(tx=>{
+    const d = document.createElement('div'); d.className='tx';
+    d.innerHTML = `<div style="display:flex;justify-content:space-between"><div><strong>${tx.id.slice(0,8)}</strong> <div class="tiny">${tx.from} → ${tx.to} • ${tx.amount}</div></div><div class="tiny">${new Date(tx.time).toLocaleString()}</div></div>
+    <div class="tiny">refs: ${tx.refs && tx.refs.length? tx.refs.map(r=>r.slice(0,6)).join(', '): '—'}</div>`;
+    el.appendChild(d);
+  });
+}
+
+function renderDag(){
+  // Very simple textual DAG: each tx line shows id -> refs
+  const lines = confirmed.map(tx=> `${tx.id.slice(0,8)}  <- ${ (tx.refs && tx.refs.length) ? tx.refs.map(r=>r.slice(0,8)).join(',') : 'GEN'}`);
+  document.getElementById('dag').textContent = lines.join('\n');
+}
+
+function renderBalances(){
+  const bal = computeBalancesFromConfirmed();
+  document.getElementById('myBal').textContent = (bal[myAddr] || 0).toFixed(4);
+}
+
+function renderAll(){
+  renderPeers();
+  renderPool();
+  renderLedger();
+  renderDag();
+  renderBalances();
+}
+
+document.getElementById('stepBtn').addEventListener('click', async ()=>{
+  // simulate nodes gossiping: each pending tx will be randomly sampled for broadcast attempts
+  const copy = [...pendingPool];
+  for(const tx of copy){
+    // some chance to auto-broadcast
+    if(Math.random() > 0.2){
+      await broadcastTransaction(tx);
+      // small delay between each simulation step
+      await new Promise(r=>setTimeout(r, 120 + Math.random()*300));
+    }
+  }
+});
+
+///// helpers to import simple signed txs into pool (for quick testing)
+window.pendingPool = pendingPool; // expose for button handlers inline
+
+///// small initialization (generate key automatically)
+(async ()=>{
+  await generateKeyPair();
+  // create an extra genesis tx giving some peers small balances (already created by setupNetwork)
+  renderAll();
+})();
+
+</script>
+</body>
+          </html>
